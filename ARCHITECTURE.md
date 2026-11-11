@@ -22,7 +22,7 @@ codeatlas/
   archmap.py     architecture map (Mermaid/DOT/JSON) + diff impact
   tools.py       read-only tool surface (MCP contract, plain functions)
 fixtures/        small Python + JS repos used by tests and the demo
-tests/           25 tests, unittest, no network
+tests/           160 tests, unittest, no network
 ```
 
 ## Data flow
@@ -67,7 +67,7 @@ repo files --walk+hash--> indexer --parse--> ParsedFile (symbols/imports/calls)
 | Language | Method | Understood | Known gaps |
 |---|---|---|---|
 | Python | `ast` | functions, methods, classes, constants, imports, calls, docstrings, exact lines | dynamic imports (`importlib`), decorators' runtime effects |
-| JavaScript / TypeScript | regex | function/class/method defs, `import`/`require`, calls | dynamic imports, re-exports, destructuring, JSX, decorators, type-only constructs |
+| JavaScript / TypeScript | regex | function/class/method defs (incl. return-annotated arrows and methods, getters), interfaces, type aliases, enums, module-level constants, `import`/`require`, calls, exact lines | dynamic imports, destructured methods, parameter lists with nested parentheses, JSX syntax |
 
 Parser failures never crash indexing: a file that fails to parse is
 recorded with `parse_error` and its symbols are empty, and the index
@@ -87,7 +87,7 @@ stats report the count.
 
 ## Testing
 
-`python -m unittest discover -s tests` -- 25 tests, all offline.
+`python -m unittest discover -s tests` -- 160 tests, all offline.
 Fixtures live in `fixtures/` and are copied to temp dirs per test, so
 tests never touch the real repo. Coverage includes: incremental
 re-indexing (only changed files), symbol search with line numbers,

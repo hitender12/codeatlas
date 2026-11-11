@@ -7,7 +7,9 @@ no account, no API key, and no uploads.
 
 **Requirements:** Python 3.10 or newer. No third-party packages:
 CodeAtlas is standard library only, so there is nothing to install
-to follow this tutorial.
+to follow this tutorial. (On systems where the `python` command does
+not exist, use `python3` in every command below — the two are
+interchangeable here.)
 
 ## 1. Try the demo first (no setup)
 
@@ -105,9 +107,9 @@ python -m codeatlas ask "charge"
 Output is one line per result, with a `why:` line under each:
 
 ```text
-[symbol] billing.py:…  (100)  billing.charge
+[symbol] billing.py:12  (106)  charge
     why: exact symbol match
-    why: 1 caller(s) in the repo
+    why: 3 caller(s) in the repo
 ```
 
 Every result explains itself: exact symbol match, symbol name
@@ -168,8 +170,9 @@ python -m codeatlas context "charge a customer after authentication" --budget 40
 
 A context pack is a set of snippets — each with an exact file path,
 line range, and a `why:` explaining why it was chosen — that fits
-inside a token budget you set. The default budget is 4000 tokens.
-Tokens are approximated as 4 characters per token (documented in
+inside a token budget you set. The default budget is 4000 tokens, or
+`context_budget_tokens` from `.codeatlas/config.json` when that file
+sets it. Tokens are approximated as 4 characters per token (documented in
 [architecture.md](architecture.md)); a snippet that would exceed
 the remaining budget is truncated at a line boundary, and the pack
 never exceeds its budget. The `--json` form is the machine-readable
@@ -210,7 +213,7 @@ execute, or upload code.
 | `no index found -- run \`codeatlas index\` first` | You ran `map`, `ask`, `context`, or `diff` before indexing. Run `python -m codeatlas index` first. |
 | `not a git repository and no files given` | `diff` without `--files` needs a git repo. Pass `--files <name>…` explicitly, or run it inside a git checkout. |
 | `warning: N file(s) failed to parse` after `index` | Those files have a parse error (e.g. a Python syntax error). They are recorded in the index with `parse_error` and empty symbols; indexing continues. Fix the file, or inspect `.codeatlas/index.json` for the recorded error. |
-| A JS/TS symbol is missing, or a call is attributed to the wrong function | JS/TS parsing is regex-based and approximate: it misses dynamic imports, re-exports, destructured methods, and JSX components. See [architecture.md](architecture.md) for the full list of gaps. |
+| A JS/TS symbol is missing, or a call is attributed to the wrong function | JS/TS parsing is regex-based and approximate: it misses dynamic imports, destructured methods, parameter lists with nested parentheses, and JSX syntax (components are found only as plain functions/classes). Interfaces, type aliases, enums, return-annotated arrows/methods, getters, and module-level constants *are* extracted. See [architecture.md](architecture.md) for the full list of gaps. |
 | Results look thin on a large repo | Check that the files are not under an ignored directory (`.git`, `node_modules`, `.venv`, `dist`, `build`, … — see `indexer.py: DEFAULT_IGNORES`) and that their extensions are supported (`.py`, `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`). |
 | `python -m codeatlas` says `No module named codeatlas` | Run it from the CodeAtlas repo root, or install with `pip install -e .`. |
 
@@ -220,6 +223,6 @@ execute, or upload code.
   graph, search, and context packs actually work — including the
   known gaps.
 - Run the test suite: `python -m unittest discover -s tests`
-  (25 tests, all offline).
+  (160 tests, all offline).
 - To contribute — especially to add a language parser — read
   [CONTRIBUTING.md](../CONTRIBUTING.md).

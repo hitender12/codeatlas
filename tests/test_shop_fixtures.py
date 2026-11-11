@@ -4,10 +4,11 @@ Both fixtures are small realistic shops (auth, catalog, cart, orders,
 payments, API surface, tests) that exercise the indexer end to end:
 multi-module imports, cross-file calls, test links, and the arch map.
 
-Note on JS/TS line numbers: the regex parser mis-reports definition
-lines after blank lines (see TestJavaScriptLineNumbers in
-test_edge_cases.py), so TS assertions here check symbol *names*, kinds,
-imports, and graph edges -- never exact definition lines.
+Note on JS/TS line numbers: the regex parser used to mis-report
+definition lines after blank lines (see TestJavaScriptLineNumbers in
+test_edge_cases.py); that was fixed on 2026-11-11, so TS assertions
+here may check exact definition lines as well as names, kinds,
+imports, and graph edges.
 """
 
 import os
@@ -148,7 +149,9 @@ class TestShopTs(FixtureCase):
         self.assertEqual(stats.indexed, 11)
         self.assertEqual(stats.parse_errors, 0)
         self.assertEqual(len(index.files), 11)
-        self.assertEqual(index.total_symbols, 33)
+        # 37 = 33 before 2026-11-11, plus ProductRow + Product
+        # interfaces and the TAX_RATE + USERS module-level constants.
+        self.assertEqual(index.total_symbols, 37)
         self.assertEqual(index.total_imports, 19)
         self.assertNotIn("package.json", index.files)  # non-source ignored
 
@@ -164,6 +167,19 @@ class TestShopTs(FixtureCase):
                         index.files["src/billing.ts"].parsed.symbols}
         self.assertIn("charge", billing_syms)
         self.assertIn("applyDiscount", billing_syms)
+        # Interfaces and module-level constants are symbols too.
+        self.assertIn(("ProductRow", "interface"),
+                      {(s.name, s.kind) for s in
+                       index.files["src/db.ts"].parsed.symbols})
+        self.assertIn(("Product", "interface"),
+                      {(s.name, s.kind) for s in
+                       index.files["src/catalog.ts"].parsed.symbols})
+        self.assertIn(("TAX_RATE", "constant"),
+                      {(s.name, s.kind) for s in
+                       index.files["src/billing.ts"].parsed.symbols})
+        self.assertIn(("USERS", "constant"),
+                      {(s.name, s.kind) for s in
+                       index.files["src/api.ts"].parsed.symbols})
         # Arrow-function utils (no return annotation) are found.
         utils_syms = {s.name for s in
                       index.files["src/utils.ts"].parsed.symbols}
@@ -226,15 +242,18 @@ class TestShopTs(FixtureCase):
         self.assertEqual(set(impact.affected_tests),
                          {"test/auth.test.ts", "test/orders.test.ts"})
 
-    def test_search_finds_the_right_file_by_path_not_line(self):
-        # Lines are unreliable for TS (see test_edge_cases.py), so assert
-        # on the file and symbol name only.
+    def test_search_finds_the_right_file_and_line(self):
+        # TS definition lines are exact since the 2026-11-11 parser
+        # fix, so assert on file, symbol name, and line.
         index, _, graph = self.index()
         results = search(index, graph, "charge")
         symbols = [r for r in results if r.kind == "symbol"]
         self.assertTrue(symbols)
         self.assertEqual(symbols[0].path, "src/billing.ts")
         self.assertEqual(symbols[0].name, "charge")
+        lines = index.read_lines("src/billing.ts", symbols[0].line,
+                                 symbols[0].line)
+        self.assertIn("function charge", lines[0])
         auth_results = search(index, graph, "where is authentication handled?")
         self.assertEqual(auth_results[0].path, "src/auth.ts")
 

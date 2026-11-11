@@ -9,7 +9,8 @@ measured numbers (run ``python3 tests/retrieval_eval.py``)::
     17 cases
     mean search precision 0.337, mean search recall 1.000, hit@1 0.824
     mean pack   precision 0.320, mean pack   recall 1.000
-    12 empty-text snippets in TS context packs (JS line-number bug)
+    0 empty-text snippets in TS context packs (the JS line-number bug
+    was fixed on 2026-11-11; the count was 12 before the fix)
 
 Precision is low by design of the metric: relevance is one strict file
 per case (the file that *defines* the answer), while search returns

@@ -110,11 +110,15 @@ def git_changed_files(root: str, ref: str | None = None) -> list[str] | None:
 
     With ``ref``: ``git diff --name-only <ref>`` (committed changes).
     Without: working-tree + staged changes (``git status --porcelain``).
+
+    ``ref`` is passed after ``--end-of-options`` so a ref starting
+    with ``-`` cannot be parsed as a git option (e.g. ``--output``).
     """
     try:
         if ref:
             out = subprocess.run(
-                ["git", "-C", root, "diff", "--name-only", ref],
+                ["git", "-C", root, "diff", "--name-only",
+                 "--end-of-options", ref],
                 capture_output=True, text=True, timeout=30,
             )
         else:

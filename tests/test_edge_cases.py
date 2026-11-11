@@ -10,10 +10,11 @@ Two rules govern this file:
   (see the probes in the task report). Nothing here asserts behaviour
   the code does not actually have.
 * Tests labelled KNOWN LIMITATION pin a real defect in the current
-  implementation -- mostly the regex JS/TS parser's line numbers (see
-  TestJavaScriptLineNumbers) -- so a future parser fix fails loudly
-  instead of silently changing behaviour. They assert what the code
-  does today, not what it should do.
+  implementation -- so a future fix fails loudly instead of silently
+  changing behaviour. They assert what the code does today, not what
+  it should do. (The JS/TS line-number and parser-coverage
+  limitations used to be pinned this way; they were fixed on
+  2026-11-11 and the tests now assert the correct behaviour.)
 """
 
 import io
@@ -656,21 +657,30 @@ class TestRelativeImports(TempRepoCase):
 
 
 class TestTypeScriptGaps(unittest.TestCase):
-    def test_return_annotated_arrow_function_is_missed(self):
-        # KNOWN LIMITATION: the arrow regex needs `) =>` with nothing
-        # between, so a TS return-type annotation hides the function.
+    def test_return_annotated_arrow_function_is_found(self):
+        # Fixed 2026-11-11: the arrow regex allows a return-type
+        # annotation between the parameter list and `=>`.
         parsed = parse_file(
             "u.ts", "export const greet = (n: string): string => `hi ${n}`;\n"
         )
-        self.assertEqual(parsed.symbols, [])
-        # The same arrow without the annotation is found.
+        self.assertIn("greet", [s.name for s in parsed.symbols])
+        # The same arrow without the annotation is still found.
         parsed = parse_file("u.ts", "export const greet = (n: string) => `hi ${n}`;\n")
         self.assertIn("greet", [s.name for s in parsed.symbols])
 
-    def test_return_annotated_methods_are_missed(self):
-        # KNOWN LIMITATION: the method regex needs `) {` with nothing
-        # between, so TS return annotations hide async/static methods
-        # and getters (which have no parens at all).
+    def test_single_param_arrow_without_parens_is_found(self):
+        parsed = parse_file("u.ts", "const double = x => x * 2;\n")
+        self.assertIn("double", [s.name for s in parsed.symbols])
+
+    def test_function_expression_const_is_found(self):
+        parsed = parse_file(
+            "u.ts", "export const handler = async function (req) { return req; };\n"
+        )
+        self.assertIn("handler", [s.name for s in parsed.symbols])
+
+    def test_return_annotated_methods_and_getters_are_found(self):
+        # Fixed 2026-11-11: the method regex allows a return-type
+        # annotation between `)` and `{`, and getters (no parens).
         parsed = parse_file(
             "s.ts",
             "export class Cart {\n"
@@ -683,9 +693,12 @@ class TestTypeScriptGaps(unittest.TestCase):
         names = {s.name for s in parsed.symbols}
         self.assertIn("Cart", names)
         self.assertIn("constructor", names)
-        self.assertNotIn("add", names)
-        self.assertNotIn("create", names)
-        self.assertNotIn("total", names)
+        self.assertIn("add", names)
+        self.assertIn("create", names)
+        self.assertIn("total", names)
+        kinds = {(s.name, s.kind) for s in parsed.symbols}
+        self.assertIn(("add", "method"), kinds)
+        self.assertIn(("total", "method"), kinds)
 
     def test_plain_methods_without_annotations_are_found(self):
         parsed = parse_file(
@@ -699,23 +712,53 @@ class TestTypeScriptGaps(unittest.TestCase):
         self.assertIn(("add", "method"), names)
         self.assertIn(("total", "method"), names)
 
-    def test_typescript_interface_is_not_a_symbol(self):
-        # KNOWN LIMITATION: interfaces / type aliases are not extracted.
+    def test_typescript_interface_and_type_alias_are_symbols(self):
+        # Fixed 2026-11-11: interfaces and type aliases are extracted
+        # (kinds "interface" and "type"), as are enums.
         parsed = parse_file(
             "d.ts",
             "export interface Product {\n  sku: string;\n  price: number;\n}\n"
+            "export type ProductId = string;\n"
+            "export enum Status { Active, Archived }\n"
             "export function getProduct(): Product { return null; }\n",
         )
-        self.assertNotIn("Product", [s.name for s in parsed.symbols
-                                     if s.kind == "class"])
-        self.assertIn("getProduct", [s.name for s in parsed.symbols])
+        kinds = {(s.name, s.kind) for s in parsed.symbols}
+        self.assertIn(("Product", "interface"), kinds)
+        self.assertIn(("ProductId", "type"), kinds)
+        self.assertIn(("Status", "enum"), kinds)
+        self.assertIn(("getProduct", "function"), kinds)
 
-    def test_js_constants_are_not_symbols(self):
-        # Python extracts module-level UPPER names; the JS parser has no
-        # equivalent, so a JS const never appears as a symbol.
-        parsed = parse_file("b.js", "const TAX_RATE = 0.2;\nfunction f() {}\n")
-        self.assertNotIn("TAX_RATE", [s.name for s in parsed.symbols])
-        self.assertIn("f", [s.name for s in parsed.symbols])
+    def test_js_constants_are_symbols(self):
+        # Fixed 2026-11-11: module-level UPPER_SNAKE_CASE consts are
+        # extracted as "constant" symbols, mirroring the Python rule.
+        # Lowercase consts are ordinary values, not symbols.
+        parsed = parse_file(
+            "b.js",
+            "const TAX_RATE = 0.2;\n"
+            "const lowercase = 1;\n"
+            "export const MAX_RETRIES = 3;\n"
+            "function f() {}\n",
+        )
+        kinds = {(s.name, s.kind) for s in parsed.symbols}
+        self.assertIn(("TAX_RATE", "constant"), kinds)
+        self.assertIn(("MAX_RETRIES", "constant"), kinds)
+        self.assertNotIn(("lowercase", "constant"), kinds)
+        self.assertIn(("f", "function"), kinds)
+
+    def test_object_literal_braces_are_not_methods(self):
+        # A `name: {` object-literal line must not be read as a method
+        # (regression guard for the getter/annotation support).
+        parsed = parse_file(
+            "o.js",
+            "const config = {\n"
+            "  options: {\n"
+            "    retries: 3\n"
+            "  }\n"
+            "};\n",
+        )
+        self.assertEqual(
+            [s.name for s in parsed.symbols if s.kind == "method"], []
+        )
 
     def test_tsx_arrow_component_is_found(self):
         parsed = parse_file(
@@ -733,29 +776,31 @@ class TestTypeScriptGaps(unittest.TestCase):
 
 
 class TestJavaScriptLineNumbers(unittest.TestCase):
-    """KNOWN LIMITATION: every JS/TS regex starts with ``^\\s*`` and
-    ``\\s`` matches newlines, so a definition preceded by blank line(s)
-    is reported at the FIRST preceding blank line, not its real line.
-    The definition-site skip in the call extractor compares against
-    that wrong line, so the definition also leaks as a self-call.
-    Python (real ``ast``) lines are exact; only the regex languages
-    are affected. If the parser is ever fixed, these tests must be
-    updated to assert the true lines -- that failure is the point.
+    """JS/TS definition lines are exact.
+
+    Fixed 2026-11-11: every JS/TS regex used to start with ``^\\s*``
+    and ``\\s`` matches newlines, so a definition preceded by blank
+    line(s) was reported at the first preceding blank line. The
+    definition-site skip in the call extractor compared against that
+    wrong line, so the definition also leaked as a self-call, and
+    context packs read a blank line as the symbol snippet. The
+    regexes now use ``[ \\t]`` at line starts, so lines are exact --
+    these tests pin the correct lines.
     """
 
-    def test_def_after_one_blank_line_reports_the_blank_line(self):
+    def test_def_after_one_blank_line_reports_its_real_line(self):
         parsed = parse_file(
             "a.js", "const a = 1;\n\nfunction target() {\n  return 1;\n}\n"
         )
         self.assertEqual([(s.name, s.line) for s in parsed.symbols],
-                         [("target", 2)])  # true line is 3
+                         [("target", 3)])
 
-    def test_def_after_two_blank_lines_reports_the_first_blank(self):
+    def test_def_after_two_blank_lines_reports_its_real_line(self):
         parsed = parse_file(
             "a.js", "const a = 1;\n\n\nfunction target() {\n  return 1;\n}\n"
         )
         self.assertEqual([(s.name, s.line) for s in parsed.symbols],
-                         [("target", 2)])  # true line is 4
+                         [("target", 4)])
 
     def test_def_at_file_start_is_exact(self):
         parsed = parse_file("a.js", "function first() {}\n")
@@ -767,48 +812,47 @@ class TestJavaScriptLineNumbers(unittest.TestCase):
         self.assertEqual([(s.name, s.line) for s in parsed.symbols],
                          [("target", 2)])
 
-    def test_definition_site_leaks_as_self_call_after_blank_line(self):
+    def test_definition_site_is_not_a_self_call_after_blank_line(self):
         parsed = parse_file(
             "a.js", "const a = 1;\n\nfunction target() {\n  return 1;\n}\n"
         )
-        self.assertIn(("target", "target", 3),
-                      [(c.caller, c.callee, c.line) for c in parsed.calls])
+        self.assertEqual(parsed.calls, [])
 
     def test_no_self_call_without_preceding_blank_line(self):
         parsed = parse_file("a.js", "function target() {\n  return 1;\n}\n")
         self.assertEqual(parsed.calls, [])
 
-    def test_import_after_blank_line_reports_early(self):
+    def test_import_after_blank_line_reports_its_real_line(self):
         parsed = parse_file("a.js", "const a = 1;\n\nimport { x } from './m';\n")
         self.assertEqual([(i.module, i.line) for i in parsed.imports],
-                         [("./m", 2)])  # true line is 3
+                         [("./m", 3)])
 
-    def test_method_after_blank_line_inside_class_reports_early(self):
+    def test_method_after_blank_line_inside_class_reports_its_real_line(self):
         parsed = parse_file(
             "a.js", "class Foo {\n\n  bar() {\n    return 1;\n  }\n}\n"
         )
         self.assertEqual([(s.name, s.line) for s in parsed.symbols],
-                         [("Foo", 1), ("bar", 2)])  # bar is truly on line 3
+                         [("Foo", 1), ("bar", 3)])
 
-    def test_sample_js_search_points_at_a_blank_line(self):
+    def test_sample_js_search_points_at_the_definition_line(self):
         with open(os.path.join(FIXTURES, "sample-js", "billing.js")) as fh:
             source = fh.read()
-        # True def line is 10; the parser reports 9, which is blank.
+        # The true def line is 10; the old parser reported 9 (blank).
         parsed = parse_file("billing.js", source)
         charge = [s for s in parsed.symbols if s.name == "charge"][0]
-        self.assertEqual(charge.line, 9)
-        self.assertEqual(source.splitlines()[charge.line - 1], "")
+        self.assertEqual(charge.line, 10)
         self.assertEqual(
-            source.splitlines()[charge.line], "function charge(auth, username, password, amount) {"
+            source.splitlines()[charge.line - 1],
+            "function charge(auth, username, password, amount) {",
         )
 
 
 class TestJavaScriptContextPackEmptySnippet(TempRepoCase):
-    def test_js_symbol_snippet_can_be_empty_text(self):
-        # Consequence of the line-number bug: the symbol snippet for a
-        # JS function is read from the (blank) reported line, so the
-        # pack contains a 1-token empty snippet. Text hits still carry
-        # the real definition line, so the pack is usable but noisy.
+    def test_js_symbol_snippets_carry_real_code(self):
+        # Fixed 2026-11-11 (consequence of the line-number bug): the
+        # symbol snippet for a JS function used to be read from the
+        # (blank) reported line, so packs contained empty snippets.
+        # Every snippet now carries real code.
         shutil.copytree(os.path.join(FIXTURES, "sample-js"),
                         os.path.join(self.tmp, "sample-js"))
         repo = os.path.join(self.tmp, "sample-js")
@@ -817,12 +861,10 @@ class TestJavaScriptContextPackEmptySnippet(TempRepoCase):
         pack = build_context_pack(index, graph, "charge a customer",
                                   budget_tokens=400)
         self.assertLessEqual(pack.tokens, 400)
-        empties = [s for s in pack.snippets if not s.text.strip()]
-        self.assertTrue(empties, "expected at least one empty JS snippet")
-        self.assertTrue(any(s.path == "billing.js" and s.start_line == 9
-                            for s in empties))
-        # ...but the real definition line is present via a text hit.
-        self.assertTrue(any(s.path == "billing.js" and "function charge" in s.text
+        self.assertTrue(all(s.text.strip() for s in pack.snippets),
+                        "no snippet may be empty text")
+        self.assertTrue(any(s.path == "billing.js" and s.start_line == 10
+                            and "function charge" in s.text
                             for s in pack.snippets))
 
 

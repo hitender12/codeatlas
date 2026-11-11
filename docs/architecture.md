@@ -14,7 +14,7 @@ is Rust + Tree-sitter + Tantivy + SQLite; this repo implements the
 same engine and the same module boundaries in Python, so the behaviour
 is verifiable today and the port is mechanical. Python 3.10+, no
 third-party dependencies, no network calls, no account, no API key.
-The test suite is 25 `unittest` tests, all offline.
+The test suite is 160 `unittest` tests, all offline.
 
 ## Module map
 
@@ -31,7 +31,7 @@ codeatlas/
   archmap.py     architecture map (Mermaid/DOT/JSON) + diff impact
   tools.py       read-only tool surface (the MCP contract, plain functions)
 fixtures/        small Python + JS repos used by tests and demo.py
-tests/           25 tests, unittest, no network
+tests/           160 tests, unittest, no network
 ```
 
 ## Data flow
@@ -89,13 +89,8 @@ Change detection is by **content hash, not mtime**:
 indexing `fixtures/sample-py` parses 5 files the first time, 0 the
 second time, and exactly 1 after appending a comment to one file.
 
-> **Note — Git status is not used for indexing.** The module
-> docstring in `indexer.py` and the README say change detection
-> prefers `git status` when available. That is not what the code
-> does: `indexer._git_changed_files` exists but is never called by
-> `index_repo`, and incremental indexing is SHA-256 only. Git is
-> used only by the diff view (see "Diff impact" below). This is a
-> known doc/code divergence to fix, not a behaviour to rely on.
+Change detection is by SHA-256 only. Git status is used only by the
+diff view (see "Diff impact" below), never by indexing.
 
 ### Persistence
 
@@ -121,11 +116,17 @@ inclusive line slice read from disk, used by context packs.
 `init_repo` writes `.codeatlas/config.json` with `version`,
 `languages: ["python", "javascript", "typescript"]`, the sorted
 ignore list, `context_budget_tokens: 4000`, and a `privacy` note.
-**That file is currently write-only: nothing in v0.1.0 reads it back.**
-The ignore list, the language list, and the default context budget
-(4000, in `__main__.py` / `context.py`) are hard-coded constants.
-Do not document or rely on editing `config.json` to change behaviour
-until a reader for it is implemented.
+**That file is read back on every index** by `load_config` in
+`indexer.py`: the ignore list, the language list, and the default
+context budget all take effect. Missing, corrupt, or invalid entries
+fall back to the built-in defaults, per key (an invalid
+`context_budget_tokens` does not discard a valid `languages` list,
+and unknown language names are dropped). Two directories are always
+ignored no matter what the config says: `.git` and `.codeatlas`
+(the index must never index itself). The walk also never follows
+symlinks, and index records whose paths would escape the repo root
+are rejected on load and on read, so a crafted `index.json` cannot
+make the reader open files outside the repository.
 
 ## The parsers (`parsers.py`)
 
@@ -143,7 +144,8 @@ class ParsedFile:
 
 @dataclass
 class Symbol:
-    name: str; kind: str          # function | method | class | variable | constant
+    name: str; kind: str          # function | method | class | variable |
+                                  # constant | interface | type | enum
     line: int; end_line: int      # 1-based
     qualified_name: str = ""      # e.g. Authenticator.authenticate
     signature: str = ""
@@ -187,19 +189,29 @@ executed.
 
 `_parse_javascript` uses compiled regular expressions for `import`
 (including `import type`), `require(…)`, `export … from …`,
-`function` declarations, `const name = (…) =>` arrow functions,
-`class` declarations, and indented `name(…) {` method lines
-(filtered against a keyword set). Calls are every `name(` occurrence
-that is not a definition site, with the caller attributed to the
-nearest preceding symbol — best-effort, not scope-accurate.
+`function` declarations, `const name = (…) =>` arrow functions
+(including return-type annotations and single-identifier params),
+`const name = function …` expressions, `class` declarations,
+`interface` / `type` / `enum` declarations, module-level
+`UPPER_SNAKE_CASE` consts, and indented `name(…) {` method lines
+(including return-type annotations and getters, which have no
+parens) — all filtered against a keyword set. Line numbers are
+exact: the patterns use `[ \t]` at line starts, never `\s` (which
+matches newlines and used to mis-report definitions after blank
+lines). Calls are every `name(` occurrence that is not a definition
+site, with the caller attributed to the nearest preceding
+function/method/class symbol — best-effort, not scope-accurate.
+Interfaces, type aliases, enums, and constants are not call scopes.
 `end_line` is set to the definition line for every JS/TS symbol:
 there is no real end line, because there is no syntax tree.
 
 Known gaps (also in the root `ARCHITECTURE.md`): dynamic imports,
-re-exports beyond `export … from`, destructured methods, JSX
-components, decorators, and type-only constructs. The parser degrades
-gracefully — partial results, never a crash — and those gaps are
-part of the contract, not bugs to paper over.
+destructured methods, parameter lists with nested parentheses, and
+JSX syntax (components are found only as plain functions/classes).
+Re-export *imports* (`export … from`) are extracted, but
+re-exported names are not symbols. The parser degrades gracefully
+— partial results, never a crash — and those gaps are part of the
+contract, not bugs to paper over.
 
 ## The graph (`graph.py`)
 
@@ -247,7 +259,7 @@ and paths under `test/` or `tests/`.
 ## Hybrid search (`search.py`)
 
 `search(index, graph, query, limit=10) -> list[SearchResult]`
-combines five signals, in priority order, and every result carries
+combines six signals, in priority order, and every result carries
 `reasons` (a list of strings) explaining its score. There is no
 embedding model; ranking is deterministic.
 
@@ -376,16 +388,17 @@ this module writes, executes, or uploads code.
 `python -m codeatlas <command> [path] [options]`, or `codeatlas`
 after `pip install -e .`. Commands: `init`, `index` (`--force`),
 `map` (`--format mermaid|dot|json`), `ask` (`--limit`, default 10),
-`context` (`--budget`, default 4000; `--json`), `diff` (`--ref`,
-`--files …`). `map`, `ask`, `context`, and `diff` load
-`.codeatlas/index.json` and fail with exit code 1 and
+`context` (`--budget`, default from `.codeatlas/config.json`
+`context_budget_tokens`, or 4000 when there is no config; `--json`),
+`diff` (`--ref`, `--files …`). `map`, `ask`, `context`, and `diff`
+load `.codeatlas/index.json` and fail with exit code 1 and
 `"no index found -- run \`codeatlas index\` first"` when there is
 nothing indexed; `diff` additionally fails when the target is not a
 git repo and no files were given.
 
 ## Testing
 
-`python -m unittest discover -s tests` — 25 tests, all offline.
+`python -m unittest discover -s tests` — 160 tests, all offline.
 Fixtures are copied to temp dirs per test, so tests never touch the
 real repo. Coverage includes incremental re-indexing (only changed
 files re-parsed, deletions removed), symbol search with verified
@@ -404,17 +417,17 @@ Honest list, so contributors do not "fix" the wrong thing:
    production stack is documented in the root `ARCHITECTURE.md`
    under "Production path". The `tools.py` functions are the
    contract those adapters will call.
-2. **Indexing does not use Git status** (see "Incremental
-   re-indexing" above): `_git_changed_files` in `indexer.py` is
-   dead code, and the README/ARCHITECTURE.md wording that says
-   otherwise is wrong.
-3. **`.codeatlas/config.json` is written but never read** (see
-   "Configuration" above).
-4. **No real tokenizer** — token budgets are `chars / 4`.
-5. **JS/TS parsing is regex-based and approximate** — see the gaps
+2. **No real tokenizer** — token budgets are `chars / 4`.
+3. **JS/TS parsing is regex-based and approximate** — see the gaps
    listed under "JavaScript / TypeScript" above; `end_line` is the
    definition line, not a real end line.
-6. **In-memory index + JSON on disk** — no database; huge monorepos
+4. **In-memory index + JSON on disk** — no database; huge monorepos
    have not been benchmarked.
-7. **No semantic/embedding search** — ranking is deterministic
+5. **No semantic/embedding search** — ranking is deterministic
    signals only, by design.
+
+Two former divergences were fixed on 2026-11-11 and are no longer
+gaps: indexing is SHA-256 only (the old README/`indexer.py` claim
+that it prefers `git status` was wrong; the dead helper is removed),
+and `.codeatlas/config.json` is now read back (ignore list, language
+filter, default context budget).

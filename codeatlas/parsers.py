@@ -37,7 +37,8 @@ SUPPORTED_EXTENSIONS = {
 @dataclass
 class Symbol:
     name: str
-    kind: str  # function | method | class | variable | constant
+    # function | method | class | variable | constant | interface | type | enum
+    kind: str
     line: int
     end_line: int
     qualified_name: str = ""
@@ -288,31 +289,80 @@ _JS_KEYWORDS = {
     "if", "for", "while", "switch", "catch", "return", "function", "class",
     "new", "typeof", "instanceof", "else", "do", "try", "throw", "await",
     "yield", "delete", "void", "in", "of", "case", "default", "import",
-    "export", "from", "extends", "super", "this", "console",
+    "export", "from", "extends", "super", "this", "console", "finally",
+    "with",
 }
 
+# NOTE on whitespace in these patterns: every ``^`` anchor is followed by
+# ``[ \t]*`` (never ``\s*``) and every intra-line gap is ``[ \t]``. ``\s``
+# matches newlines, so a ``^\s*`` prefix let a match start on a blank
+# line *before* the real definition and report the definition at the
+# wrong line (which also leaked the definition site as a self-call and
+# made context packs read a blank line as the symbol snippet). The only
+# ``\s`` left is inside the import body class, where a multi-line
+# ``import { ... } from`` statement genuinely spans lines -- the match
+# still *starts* on the import's first line, so its line is exact.
 _IMPORT_RE = re.compile(
-    r"""^\s*import\s+(?:type\s+)?(?:[\w*{}\s,]+?\s+from\s+)?['"]([^'"]+)['"]""",
+    r"""^[ \t]*import\s+(?:type\s+)?(?:[\w*{}\s,]+?[ \t]+from[ \t]+)?['"]([^'"]+)['"]""",
     re.MULTILINE,
 )
 _REQUIRE_RE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
 _EXPORT_FROM_RE = re.compile(
-    r"""^\s*export\s+(?:\*|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]""", re.MULTILINE
-)
-_FUNCTION_RE = re.compile(
-    r"""^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(""",
+    r"""^[ \t]*export[ \t]+(?:\*|\{[^}]*\})[ \t]+from[ \t]+['"]([^'"]+)['"]""",
     re.MULTILINE,
 )
+_FUNCTION_RE = re.compile(
+    r"""^[ \t]*(?:export[ \t]+)?(?:async[ \t]+)?function[ \t]*\*?[ \t]*([A-Za-z_$][\w$]*)[ \t]*\(""",
+    re.MULTILINE,
+)
+# Arrow functions: optional return-type annotation between the parameter
+# list and `=>` (``(n: string): string =>``), and single-identifier
+# params without parens (``x => x * 2``).
 _ARROW_RE = re.compile(
-    r"""^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>""",
+    r"""^[ \t]*(?:export[ \t]+)?const[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"""
+    r"""(?:async[ \t]+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)[ \t]*"""
+    r"""(?::[ \t]*[A-Za-z_$<\[{][^=;]*?)?[ \t]*=>""",
+    re.MULTILINE,
+)
+# `const name = function (...) {...}` / `const name = async function ...`.
+_FUNC_EXPR_RE = re.compile(
+    r"""^[ \t]*(?:export[ \t]+)?const[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"""
+    r"""(?:async[ \t]+)?function[ \t]*\*?[ \t]*\(""",
     re.MULTILINE,
 )
 _CLASS_RE = re.compile(
-    r"""^\s*(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][\w$]*)\b""",
+    r"""^[ \t]*(?:export[ \t]+)?(?:default[ \t]+)?(?:abstract[ \t]+)?"""
+    r"""(?:declare[ \t]+)?class[ \t]+([A-Za-z_$][\w$]*)\b""",
     re.MULTILINE,
 )
+_INTERFACE_RE = re.compile(
+    r"""^[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?interface[ \t]+([A-Za-z_$][\w$]*)\b""",
+    re.MULTILINE,
+)
+_TYPE_ALIAS_RE = re.compile(
+    r"""^[ \t]*(?:export[ \t]+)?type[ \t]+([A-Za-z_$][\w$]*)[ \t]*=""",
+    re.MULTILINE,
+)
+_ENUM_RE = re.compile(
+    r"""^[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?(?:const[ \t]+)?enum[ \t]+([A-Za-z_$][\w$]*)\b""",
+    re.MULTILINE,
+)
+# Module-level UPPER_SNAKE_CASE consts only (column 0, optional
+# `export`), mirroring the Python rule for module-level constants.
+# Lowercase consts are ordinary locals/values and are not symbols.
+_CONST_RE = re.compile(
+    r"""^(?:export[ \t]+)?const[ \t]+([A-Z][A-Z0-9_]*)[ \t]*(?::[ \t]*[^=;]+?)?=""",
+    re.MULTILINE,
+)
+# Methods: indented `name(...) {` lines. The parameter list is optional
+# (getters have none: `get total(): number {`), and a return-type
+# annotation may sit between `)` and `{` (`: Promise<void>`). The
+# annotation's first character must start a type (`: {` is an object
+# type, but a bare `foo: {` object literal is not a method -- the
+# annotation needs a type token after the colon).
 _METHOD_RE = re.compile(
-    r"""^(\s+)(?:async\s+|static\s+|get\s+|set\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{""",
+    r"""^([ \t]+)(?:(?:async|static|get|set)[ \t]+)*([A-Za-z_$][\w$]*)[ \t]*"""
+    r"""(?:\([^)]*\))?[ \t]*(?::[ \t]*[A-Za-z_$<\[{][^{;]*?)?\{""",
     re.MULTILINE,
 )
 _CALL_RE = re.compile(r"""([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(""")
@@ -353,12 +403,39 @@ def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
                    end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
                    signature=m.group(0).strip())
         )
+    for m in _FUNC_EXPR_RE.finditer(source):
+        parsed.symbols.append(
+            Symbol(name=m.group(1), kind="function", line=_line_of(starts, m.start()),
+                   end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
+                   signature=m.group(0).strip())
+        )
     for m in _CLASS_RE.finditer(source):
         parsed.symbols.append(
             Symbol(name=m.group(1), kind="class", line=_line_of(starts, m.start()),
                    end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
                    signature=m.group(0).strip())
         )
+    for regex, kind in ((_INTERFACE_RE, "interface"), (_TYPE_ALIAS_RE, "type"),
+                        (_ENUM_RE, "enum")):
+        for m in regex.finditer(source):
+            parsed.symbols.append(
+                Symbol(name=m.group(1), kind=kind, line=_line_of(starts, m.start()),
+                       end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
+                       signature=m.group(0).strip())
+            )
+    # Module-level UPPER_SNAKE_CASE consts; skip any already captured as
+    # an arrow/function-expression symbol on the same line.
+    seen = {(s.name, s.line) for s in parsed.symbols}
+    for m in _CONST_RE.finditer(source):
+        line = _line_of(starts, m.start())
+        if (m.group(1), line) in seen:
+            continue
+        parsed.symbols.append(
+            Symbol(name=m.group(1), kind="constant", line=line,
+                   end_line=line, qualified_name=m.group(1),
+                   signature=m.group(0).strip())
+        )
+        seen.add((m.group(1), line))
     # Methods: indented `name(...) {` lines that are not top-level functions.
     seen = {(s.name, s.line) for s in parsed.symbols}
     for m in _METHOD_RE.finditer(source):
@@ -375,8 +452,14 @@ def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
 
     # Calls: every `name(` that is not a definition keyword and not a
     # definition site. Caller attribution is best-effort: the nearest
-    # preceding function/class symbol in the file.
-    defs = sorted(parsed.symbols, key=lambda s: s.line)
+    # preceding function/class symbol in the file. Interfaces, type
+    # aliases, enums and constants are not call scopes, so they are
+    # excluded from the attribution list (a module-level call after an
+    # interface would otherwise be attributed to the interface).
+    defs = sorted(
+        (s for s in parsed.symbols if s.kind in ("function", "method", "class")),
+        key=lambda s: s.line,
+    )
     for m in _CALL_RE.finditer(source):
         callee = m.group(1)
         head = callee.split(".")[0]

@@ -1,9 +1,19 @@
 """Incremental indexer.
 
 Walks a repository, hashes each supported file, and re-parses only files
-whose content changed since the last index. Change detection prefers
-``git status`` when the target is a Git checkout (fast, authoritative) and
-falls back to comparing stored SHA-256 hashes and mtimes.
+whose content changed since the last index. Change detection is by
+SHA-256 content hash only -- git status is NOT used for indexing (it
+is used only by the diff view in ``archmap.py``), so the indexer is
+correct on non-git trees too.
+
+Configuration in ``.codeatlas/config.json`` (written by ``init_repo``)
+is read back on every index: the ignore list, the language list, and
+the default context budget. Missing, corrupt, or invalid entries fall
+back to the built-in defaults.
+
+Safety: the walk never follows symlinks (a symlinked file inside the
+repo could point outside it), and index records whose paths would
+escape the repo root are rejected on load and on read.
 
 The index lives in ``.codeatlas/index.json`` inside the indexed repo and is
 plain JSON so it can be inspected with any tool.
@@ -14,10 +24,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 from dataclasses import dataclass, field
 
-from .parsers import ParsedFile, language_for_path, parse_file
+from .parsers import SUPPORTED_EXTENSIONS, ParsedFile, language_for_path, parse_file
 
 INDEX_DIR = ".codeatlas"
 INDEX_FILE = "index.json"
@@ -30,31 +39,68 @@ DEFAULT_IGNORES = {
     "target", ".idea", ".vscode",
 }
 
+# Ignored no matter what the config says: the index must never index
+# its own directory, and .git contents are never source.
+ALWAYS_IGNORED = {".git", ".codeatlas"}
+
+DEFAULT_LANGUAGES = ["python", "javascript", "typescript"]
+DEFAULT_CONTEXT_BUDGET_TOKENS = 4000
+
+
+def _is_safe_rel_path(rel: str) -> bool:
+    """True when ``rel`` is a repo-relative path that cannot escape the root.
+
+    Rejects absolute paths, NUL bytes, and any ``..`` component, so a
+    crafted ``.codeatlas/index.json`` cannot make the reader open
+    files outside the indexed repository.
+    """
+    if not rel or "\x00" in rel or os.path.isabs(rel):
+        return False
+    parts = rel.replace("\\", "/").split("/")
+    return ".." not in parts
+
+
+@dataclass
+class IndexConfig:
+    """Effective configuration for one indexed repo.
+
+    Built by :func:`load_config` from ``.codeatlas/config.json`` with
+    the built-in defaults for anything missing or invalid.
+    """
+
+    languages: list[str] = field(default_factory=lambda: list(DEFAULT_LANGUAGES))
+    ignore: set[str] = field(default_factory=lambda: set(DEFAULT_IGNORES))
+    context_budget_tokens: int = DEFAULT_CONTEXT_BUDGET_TOKENS
+
+
+def load_config(root: str) -> IndexConfig:
+    """Read ``.codeatlas/config.json``; defaults for anything absent/invalid."""
+    config = IndexConfig()
+    path = os.path.join(root, INDEX_DIR, CONFIG_FILE)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return config
+    if not isinstance(raw, dict):
+        return config
+    langs = raw.get("languages")
+    if isinstance(langs, list) and langs and all(isinstance(x, str) for x in langs):
+        known = set(SUPPORTED_EXTENSIONS.values())
+        kept = [x for x in langs if x in known]
+        if kept:
+            config.languages = kept
+    ignore = raw.get("ignore")
+    if isinstance(ignore, list) and all(isinstance(x, str) for x in ignore):
+        config.ignore = set(ignore)
+    budget = raw.get("context_budget_tokens")
+    if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
+        config.context_budget_tokens = budget
+    return config
+
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def _git_changed_files(root: str) -> set[str] | None:
-    """Changed + untracked files from git, or None when not a git repo."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", root, "status", "--porcelain", "-uall"],
-            capture_output=True, text=True, timeout=30,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return None
-    if out.returncode != 0:
-        return None
-    changed: set[str] = set()
-    for line in out.stdout.splitlines():
-        if len(line) < 4:
-            continue
-        path = line[3:].strip()
-        if " -> " in path:  # renames: "old -> new"
-            path = path.split(" -> ", 1)[1]
-        changed.add(path.strip('"'))
-    return changed
 
 
 @dataclass
@@ -122,10 +168,16 @@ class Index:
         if payload.get("version") != INDEX_VERSION:
             return index
         for rel, rec in payload.get("files", {}).items():
+            if not _is_safe_rel_path(rel):
+                # A crafted index must not smuggle in a path that
+                # escapes the repo root (e.g. "../../etc/passwd").
+                continue
             try:
-                index.files[rel] = FileRecord.from_dict(rec)
+                record = FileRecord.from_dict(rec)
             except (KeyError, TypeError):
                 continue
+            record.path = rel  # the key is authoritative, not the record
+            index.files[rel] = record
         return index
 
     # -- queries -------------------------------------------------------
@@ -152,6 +204,8 @@ class Index:
 
     def read_lines(self, rel_path: str, start: int, end: int) -> list[str]:
         """1-based inclusive line slice of a file in the index."""
+        if not _is_safe_rel_path(rel_path):
+            raise ValueError(f"refusing to read path outside the repo: {rel_path!r}")
         full = os.path.join(self.root, rel_path)
         with open(full, encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()
@@ -174,29 +228,51 @@ class IndexStats:
         }
 
 
-def _iter_source_files(root: str, ignore: set[str]):
+def _iter_source_files(root: str, ignore: set[str], languages: list[str] | None = None):
+    """Yield ``(rel_path, full_path)`` for every indexable source file.
+
+    Symlinked files are skipped: the walk never follows a symlink out
+    of the repository (a link inside the repo could point at e.g.
+    ``/etc/passwd`` and have its contents embedded in the index).
+    Symlinked directories are not descended into either
+    (``os.walk`` with ``followlinks=False``).
+    """
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in ignore and not d.startswith(".")]
         for name in sorted(filenames):
-            if language_for_path(name) is None:
+            lang = language_for_path(name)
+            if lang is None:
+                continue
+            if languages is not None and lang not in languages:
                 continue
             full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                continue
             rel = os.path.relpath(full, root)
             yield rel, full
 
 
-def index_repo(root: str, force: bool = False) -> tuple[Index, IndexStats]:
+def index_repo(root: str, force: bool = False,
+               config: IndexConfig | None = None) -> tuple[Index, IndexStats]:
     """Index (or re-index) ``root`` incrementally.
+
+    Change detection is by SHA-256 content hash only. The ignore list
+    and language filter come from ``.codeatlas/config.json`` when it
+    exists (see :func:`load_config`); ``.git`` and ``.codeatlas`` are
+    always ignored regardless of the config.
 
     Returns the index and stats. ``stats.indexed`` counts files that were
     actually parsed in this run -- the number the incremental logic touched.
     """
     root = os.path.abspath(root)
+    if config is None:
+        config = load_config(root)
+    ignore = ALWAYS_IGNORED | set(config.ignore)
     index = Index.load(root)
     stats = IndexStats()
 
     seen: set[str] = set()
-    for rel, full in _iter_source_files(root, DEFAULT_IGNORES):
+    for rel, full in _iter_source_files(root, ignore, config.languages):
         seen.add(rel)
         try:
             with open(full, "rb") as fh:
@@ -245,9 +321,9 @@ def init_repo(root: str) -> str:
     cfg_path = os.path.join(cfg_dir, CONFIG_FILE)
     config = {
         "version": INDEX_VERSION,
-        "languages": ["python", "javascript", "typescript"],
+        "languages": list(DEFAULT_LANGUAGES),
         "ignore": sorted(DEFAULT_IGNORES),
-        "context_budget_tokens": 4000,
+        "context_budget_tokens": DEFAULT_CONTEXT_BUDGET_TOKENS,
         "privacy": "local-only: codeatlas never uploads source code.",
     }
     with open(cfg_path, "w", encoding="utf-8") as fh:

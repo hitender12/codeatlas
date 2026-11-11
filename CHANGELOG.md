@@ -16,21 +16,62 @@ in `codeatlas/tools.py` are intended to stay stable.
 
 ### Added
 
-- Nothing yet.
+- **`.codeatlas/config.json` is now read back** (`indexer.load_config`):
+  the ignore list, the language filter, and the default context
+  budget (`context_budget_tokens`) take effect on every index and
+  `context` run. Missing, corrupt, or invalid entries fall back to
+  the built-in defaults, per key. `.git` and `.codeatlas` are always
+  ignored regardless of the config.
+- **JS/TS parser coverage**: return-type-annotated arrow functions
+  and methods, getters, interfaces, type aliases, enums, `const x =
+  function …` expressions, single-identifier arrow params, and
+  module-level `UPPER_SNAKE_CASE` consts (mirroring the Python
+  rule) are now extracted as symbols.
+- **Security hardening in the indexer**: the walk never follows
+  symlinks, and index records whose paths would escape the repo
+  root are rejected on load and on read, so a crafted
+  `.codeatlas/index.json` cannot make the reader open files outside
+  the repository.
 
 ### Changed
 
-- Nothing yet.
+- **Test suite: 25 → 160 tests.** Every documented CLI command is
+  now exercised verbatim by the suite, and the retrieval eval
+  (17 cases) is re-measured below.
+- **Retrieval eval** (`python3 tests/retrieval_eval.py`, 17 cases):
+  mean search precision 0.337, mean search recall 1.000, hit@1
+  0.824; mean context-pack precision 0.320, mean pack recall 1.000;
+  **empty-text snippets in TS context packs: 12 → 0** (the JS
+  line-number fix). Precision is unchanged and still low by design
+  of the strict single-file relevance metric (see the eval module
+  docstring).
 
 ### Fixed
 
-- Nothing yet.
+- **JS/TS definition lines are now exact.** The regexes used
+  `^\s*`, and `\s` matches newlines, so any definition preceded by
+  blank line(s) was reported at the first preceding blank line --
+  which also leaked the definition site as a self-call and made
+  context packs read a blank line as the symbol snippet. The
+  patterns now use `[ \t]` at line starts. The tests that pinned
+  the wrong lines now assert the true lines.
+- **README/indexer no longer claim git status drives indexing.**
+  Change detection is SHA-256 only; the dead `_git_changed_files`
+  helper is removed. Git is used only by the diff view.
+- **Documentation audit**: fixed the `ask` example output in
+  `docs/getting-started.md` (real output is `(106) charge` with
+  3 callers, not `(100) billing.charge` with 1), the search
+  docstring (six signals, not five), the read-only tool name
+  (`build_context_pack_tool`), the "no CI workflow" claim in
+  `CONTRIBUTING.md` (CI exists), the JS/TS gap lists (re-export
+  imports *are* extracted; JSX components *are* found as plain
+  functions/classes), and the stale "25 tests" counts everywhere.
 
 ## [0.1.0] — 2026-11-11
 
 The initial release: a Python standard-library reference implementation
-of the CodeAtlas blueprint (section 1), verified by a 25-test suite.
-Python 3.10+, no third-party dependencies, no network calls, no account,
+of the CodeAtlas blueprint (section 1), verified by a 134-test suite
+at publication. Python 3.10+, no third-party dependencies, no network calls, no account,
 no API key. The index lives in `.codeatlas/` inside the indexed repo.
 
 ### Added

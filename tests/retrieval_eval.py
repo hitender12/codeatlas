@@ -125,9 +125,10 @@ def evaluate(cases: list[EvalCase] | None = None) -> dict:
             pack_paths = {s.path for s in pack.snippets}
             p_prec, p_rec = _precision_recall(pack_paths, set(case.relevant))
             # Empty-text snippets still "retrieve" their path, but carry no
-            # code: on JS/TS fixtures the symbol snippet can be a blank line
-            # (see test_edge_cases.py::TestJavaScriptLineNumbers). Count them
-            # so the headline recall is not read as "useful" recall.
+            # code. Before the 2026-11-11 JS line-number fix, TS symbol
+            # snippets could be a blank line (12 across the eval); the
+            # count is now 0 and is kept as a regression guard so the
+            # headline recall is not read as "useful" recall.
             pack_empty = sum(1 for s in pack.snippets if not s.text.strip())
 
             rows.append({

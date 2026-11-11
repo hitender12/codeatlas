@@ -4,9 +4,10 @@ Signals, in priority order:
 
 1. Exact symbol lookup (name or qualified name matches the query).
 2. Symbol substring match.
-3. Full-text hits (token match in file lines, with line numbers).
-4. Path ranking (query tokens in the file path).
-5. Graph relevance (number of dependents / callers).
+3. Symbol token match (all query tokens in the identifier's tokens).
+4. Full-text hits (token match in file lines, with line numbers).
+5. Path ranking (query tokens in the file path).
+6. Graph relevance (number of dependents / callers).
 
 Every result carries ``reasons`` explaining why it ranked where it did,
 so a user (or an AI assistant) can see the evidence instead of trusting
@@ -21,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 
 from .graph import Graph
-from .indexer import Index
+from .indexer import Index, _is_safe_rel_path
 
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -152,6 +153,8 @@ def search(index: Index, graph: Graph, query: str, limit: int = 10) -> list[Sear
     # content tokens it contains, so a natural-language question matches
     # the lines that actually discuss its subject.
     for rel in sorted(index.files):
+        if not _is_safe_rel_path(rel):
+            continue  # defence in depth: load() already rejects these
         full = os.path.join(index.root, rel)
         try:
             with open(full, encoding="utf-8", errors="replace") as fh:

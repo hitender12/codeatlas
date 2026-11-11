@@ -22,7 +22,7 @@ from . import __version__
 from .archmap import build_architecture_map, diff_impact, git_changed_files, render_impact
 from .context import build_context_pack
 from .graph import Graph
-from .indexer import Index, index_repo, init_repo
+from .indexer import Index, index_repo, init_repo, load_config
 from .search import search
 
 
@@ -87,7 +87,12 @@ def _cmd_context(args) -> int:
     if not index.files:
         print("no index found -- run `codeatlas index` first", file=sys.stderr)
         return 1
-    pack = build_context_pack(index, graph, args.task, budget_tokens=args.budget)
+    # --budget wins; otherwise the default comes from
+    # .codeatlas/config.json (4000 when there is no config).
+    budget = args.budget
+    if budget is None:
+        budget = load_config(args.path).context_budget_tokens
+    pack = build_context_pack(index, graph, args.task, budget_tokens=budget)
     if args.json:
         print(json.dumps(pack.to_dict(), indent=2))
         return 0
@@ -150,7 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("context", help="build a bounded context pack for a task")
     p.add_argument("task")
     p.add_argument("path", nargs="?", default=".")
-    p.add_argument("--budget", type=int, default=4000, help="token budget")
+    p.add_argument("--budget", type=int, default=None,
+                   help="token budget (default: context_budget_tokens from "
+                        ".codeatlas/config.json, or 4000)")
     p.add_argument("--json", action="store_true", help="emit JSON")
     p.set_defaults(func=_cmd_context)
 

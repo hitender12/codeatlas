@@ -36,7 +36,7 @@ codeatlas/
   archmap.py     architecture map (Mermaid/DOT/JSON) + diff impact
   tools.py       read-only tool surface (the MCP contract, plain functions)
 fixtures/        small Python + JS repos used by tests and demo.py
-tests/           25 tests, unittest, no network
+tests/           160 tests, unittest, no network
 ```
 
 ## Local setup
@@ -49,7 +49,7 @@ is needed and no network access is required** to develop or test.
 ```bash
 git clone <repository-url>   # use the URL of this repo once published
 cd codeatlas
-python --version             # must be 3.10+
+python --version             # must be 3.10+ (use `python3` where `python` is absent)
 python demo.py               # indexes the bundled fixtures, no setup
 python -m unittest discover -s tests
 ```
@@ -84,7 +84,7 @@ The entry point is defined in `pyproject.toml` as
 python -m unittest discover -s tests
 ```
 
-Expected output: `Ran 25 tests … OK`. All tests are offline. Each
+Expected output: `Ran 160 tests … OK`. All tests are offline. Each
 test copies the fixture repositories under `fixtures/` into a
 temporary directory and indexes the copy, so tests never touch the
 real repo and never need network access. Run the full suite before
@@ -123,7 +123,8 @@ class ParsedFile:
 The three element types, also in `parsers.py`, are:
 
 - `Symbol(name, kind, line, end_line, qualified_name="", signature="", docstring="")`
-  where `kind` is one of `function | method | class | variable | constant`.
+  where `kind` is one of `function | method | class | variable |
+  constant | interface | type | enum`.
   `qualified_name` is the dotted path (`Authenticator.authenticate`);
   `line`/`end_line` are 1-based. All four types round-trip through
   `to_dict()` / `from_dict()` — the index is persisted as JSON in
@@ -183,8 +184,8 @@ for an unsupported extension, calls `_parse_python` for Python, and
    parser understands and what it misses, and update the supported
    languages wherever they are listed. Do not claim support the
    parser does not have: the JS/TS regex parser, for example, is
-   documented as missing dynamic imports, re-exports, destructured
-   methods, and JSX components.
+   documented as missing dynamic imports, destructured methods,
+   parameter lists with nested parentheses, and JSX syntax.
 
 ### What the graph needs from a parser
 
@@ -199,9 +200,11 @@ scheme. If a new resolution rule is genuinely needed, extend
 
 ## Code style
 
-There is no formatter or linter configured in this repo yet (no
-`ruff`/`black` config, no CI workflow). Until one is adopted, follow
-the existing code:
+CI (`.github/workflows/ci.yml`) runs a stdlib-only style check on
+every push and pull request: no tab indentation, no trailing
+whitespace. There is no formatter or linter configured beyond that
+(no `ruff`/`black` config). Until one is adopted, follow the
+existing code:
 
 - **Standard library only.** Do not add a third-party dependency
   without discussing it in an issue first — "no dependencies, no

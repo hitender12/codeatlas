@@ -97,7 +97,7 @@ def build_context_pack(
         score = 10.0 * overlap + min(10.0, dependents)
         try:
             lines = index.read_lines(rel, sym.line, sym.end_line)
-        except OSError:
+        except (OSError, ValueError):
             continue
         text = "\n".join(lines)
         candidates.append((
@@ -116,7 +116,7 @@ def build_context_pack(
             continue
         try:
             lines = index.read_lines(result.path, result.line, result.line)
-        except OSError:
+        except (OSError, ValueError):
             continue
         candidates.append((
             5.0,

@@ -16,11 +16,15 @@ inside your repo, and CodeAtlas never sends your code anywhere.
 
 ## What it does
 
-- **Incremental indexer** — re-indexes only changed files, using Git
-  status when available and SHA-256 hashes otherwise.
+- **Incremental indexer** — re-indexes only files whose SHA-256
+  hash changed (Git status is used only by the diff view, not by
+  indexing, so it works on non-git trees too).
 - **Language-aware parsing** — Python via the real `ast` module;
-  JavaScript/TypeScript via targeted regex extraction. Tree-sitter
-  grammars are the production path (see Architecture).
+  JavaScript/TypeScript via targeted regex extraction (functions,
+  return-annotated arrows and methods, getters, classes, interfaces,
+  type aliases, enums, module-level constants, imports, `require`,
+  call references). Tree-sitter grammars are the production path
+  (see Architecture).
 - **Repository graph** — files, symbols, imports, call edges, and test
   links, with module boundaries and reverse dependencies.
 - **Hybrid search** — exact symbol lookup, full-text search, path
@@ -32,7 +36,7 @@ inside your repo, and CodeAtlas never sends your code anywhere.
 - **Git-aware change view** — given a diff, which modules and tests are
   likely affected.
 - **Read-only tools** — `search_code`, `get_symbol`, `get_file_outline`,
-  `build_context_pack` as plain functions, ready for an MCP adapter.
+  `build_context_pack_tool` as plain functions, ready for an MCP adapter.
 
 ## Quickstart
 
@@ -84,13 +88,18 @@ Affected tests:
 
 ## Honest status (v0.1.0)
 
-What genuinely works, verified by the test suite (`25 tests, OK`):
+What genuinely works, verified by the test suite (`160 tests, OK`):
 
 - Incremental re-indexing (only changed files re-parsed, verified).
 - Python parsing via `ast` (functions, methods, classes, constants,
   imports, call references, exact line numbers).
-- JS/TS parsing via regex (functions, classes, methods, imports,
-  `require`, call references).
+- JS/TS parsing via regex (functions, return-annotated arrows and
+  methods, getters, classes, interfaces, type aliases, enums,
+  module-level constants, imports, `require`, call references, exact
+  line numbers).
+- `.codeatlas/config.json` is read back: the ignore list, the
+  language filter, and the default context budget are honoured
+  (invalid entries fall back to the built-in defaults).
 - Import-edge resolution, reverse dependents, test-file linking.
 - Hybrid search with explainable ranking and callers for every symbol.
 - Context packs that strictly enforce their token budget.
@@ -112,8 +121,11 @@ What it does **not** do yet (stated plainly, not hidden):
 - **No real tokenizer.** Token budgets use the documented approximation
   of 4 characters per token.
 - **JS/TS parsing is approximate.** Regex extraction misses dynamic
-  imports, re-exports, destructured methods, and JSX components. It
-  degrades gracefully (partial results, never a crash) and the gaps are
+  imports, destructured methods, and parameter lists with nested
+  parentheses. Re-export *imports* (`export … from`) are extracted,
+  but re-exported names are not symbols; JSX is not parsed (a
+  component is found only as a plain function/class). It degrades
+  gracefully (partial results, never a crash) and the gaps are
   listed in `ARCHITECTURE.md`.
 - **In-memory index + JSON on disk.** No persistence beyond
   `.codeatlas/index.json`; huge monorepos have not been benchmarked.
