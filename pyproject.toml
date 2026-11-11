@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codeatlas"
+dynamic = ["version"]
+description = "Local-first codebase intelligence: understand any codebase locally, with no account, no API key, and no uploads."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "CodeAtlas contributors" },
+]
+keywords = ["codebase", "code-search", "static-analysis", "cli", "local-first"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+# No dependencies: Python standard library only (see README.md).
+
+[project.scripts]
+codeatlas = "codeatlas.__main__:main"
+
+[project.urls]
+# No repository URL yet: the project has not been published to GitHub.
+# Add Homepage / Repository here once the public repo exists.
+
+[tool.setuptools]
+packages = ["codeatlas"]
+
+[tool.setuptools.dynamic]
+version = { attr = "codeatlas.__version__" }

@@ -1,0 +1,9 @@
+{
+  "name": "shop-ts",
+  "version": "1.0.0",
+  "description": "Small realistic TypeScript shop used by the CodeAtlas tests.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
