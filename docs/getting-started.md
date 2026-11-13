@@ -213,7 +213,7 @@ execute, or upload code.
 | `no index found -- run \`codeatlas index\` first` | You ran `map`, `ask`, `context`, or `diff` before indexing. Run `python -m codeatlas index` first. |
 | `not a git repository and no files given` | `diff` without `--files` needs a git repo. Pass `--files <name>…` explicitly, or run it inside a git checkout. |
 | `warning: N file(s) failed to parse` after `index` | Those files have a parse error (e.g. a Python syntax error). They are recorded in the index with `parse_error` and empty symbols; indexing continues. Fix the file, or inspect `.codeatlas/index.json` for the recorded error. |
-| A JS/TS symbol is missing, or a call is attributed to the wrong function | JS/TS parsing is regex-based and approximate: it misses dynamic imports, destructured methods, parameter lists with nested parentheses, and JSX syntax (components are found only as plain functions/classes). Interfaces, type aliases, enums, return-annotated arrows/methods, getters, and module-level constants *are* extracted. See [architecture.md](architecture.md) for the full list of gaps. |
+| A JS/TS symbol is missing, or a call is attributed to the wrong function | JS/TS parsing is regex-based and approximate: it misses dynamic imports, destructured methods, parameter lists nested more than three levels deep, methods inside a minified single-line class body, calls inside template-literal interpolations, and JSX syntax (components are found only as plain functions/classes). Interfaces, type aliases, enums, return-annotated arrows/methods, getters, generics, class-field arrows, `#private`/computed methods, and module-level constants *are* extracted. See [architecture.md](architecture.md) for the full list of gaps. |
 | Results look thin on a large repo | Check that the files are not under an ignored directory (`.git`, `node_modules`, `.venv`, `dist`, `build`, … — see `indexer.py: DEFAULT_IGNORES`) and that their extensions are supported (`.py`, `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`). |
 | `python -m codeatlas` says `No module named codeatlas` | Run it from the CodeAtlas repo root, or install with `pip install -e .`. |
 
@@ -223,6 +223,6 @@ execute, or upload code.
   graph, search, and context packs actually work — including the
   known gaps.
 - Run the test suite: `python -m unittest discover -s tests`
-  (160 tests, all offline).
+  (189 tests, all offline).
 - To contribute — especially to add a language parser — read
   [CONTRIBUTING.md](../CONTRIBUTING.md).

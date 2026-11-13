@@ -302,6 +302,226 @@ _JS_KEYWORDS = {
 # ``\s`` left is inside the import body class, where a multi-line
 # ``import { ... } from`` statement genuinely spans lines -- the match
 # still *starts* on the import's first line, so its line is exact.
+#
+# Definitions may also start mid-line after a statement boundary
+# (``;`` or ``{``), so minified single-line code is still parsed: the
+# prefix ``(?:^|(?<=[;{}]))`` is zero-width in both branches, so the
+# match still starts at the keyword and reported lines stay exact.
+# ``(`` is deliberately NOT a boundary: ``f(function g() {})`` is a
+# function *expression*, not a declaration. Imports stay line-anchored:
+# a mid-line ``import`` would be a dynamic ``import(...)`` call, not a
+# static import. Module-level ``const`` stays column-0 anchored, so a
+# function-local UPPER_SNAKE_CASE const is not mistaken for a symbol.
+_BOUNDARY = r"(?:^|(?<=[;{}]))"
+# One ``(...)`` group allowing nested parentheses up to three levels
+# deep (``(a = g(1, 2))``). Deeper nesting is still a documented gap.
+_PAREN_GROUP = r"\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)"
+
+# ---------------------------------------------------------------------------
+# Comment / string / template / regex stripping (round 2)
+# ---------------------------------------------------------------------------
+#
+# The regex parser has no comment/string awareness, so code-like text
+# inside a multi-line template literal or a /* */ block comment used to
+# be indexed as real code (phantom symbols in search results and
+# context packs), and calls inside template literals and line comments
+# were recorded as real calls. _parse_javascript therefore runs every
+# regex against the output of this pre-pass, which replaces comments,
+# string literals, template literals and regex literals with spaces,
+# preserving newlines -- so every line number and offset is identical
+# to the original source. Import module names are recovered from the
+# original source via the match spans (the quotes survive the pass,
+# only their contents are blanked).
+#
+# Known simplifications, part of the contract: template-literal
+# interpolations (``${...}``) are blanked along with the literal, so
+# calls inside an interpolation are not tracked; a ``/`` is treated
+# as a regex literal only by the _looks_like_regex_start heuristic.
+
+_JS_REGEX_PREV_CHARS = set("=(:,[!&|?{};")
+_JS_REGEX_PREV_KEYWORDS = {
+    "return", "typeof", "case", "delete", "void", "in", "of",
+    "instanceof", "new", "yield", "await", "throw",
+}
+
+
+def _looks_like_regex_start(source: str, pos: int) -> bool:
+    """Heuristic: is the ``/`` at ``pos`` the start of a regex literal?
+
+    A ``/`` starts a regex when the previous significant token cannot
+    end an expression (``= ( , : [ ! & | ? { } ;`` or a keyword like
+    ``return``/``typeof``), or when it is the first token in the file.
+    ``/=`` (division-assign) and ``/`` after an identifier/literal
+    are division.
+    """
+    if pos + 1 < len(source) and source[pos + 1] == "=":
+        return False
+    j = pos - 1
+    while j >= 0 and source[j] in " \t\n\r":
+        j -= 1
+    if j < 0:
+        return True
+    prev = source[j]
+    if prev in _JS_REGEX_PREV_CHARS:
+        return True
+    if prev.isalnum() or prev in "_$":
+        k = j
+        while k >= 0 and (source[k].isalnum() or source[k] in "_$"):
+            k -= 1
+        return source[k + 1:j + 1] in _JS_REGEX_PREV_KEYWORDS
+    return False
+
+
+def _strip_js_comments_and_strings(source: str) -> str:
+    """Blank comments, strings, template literals and regex literals.
+
+    Same length as ``source``; every newline is kept, so line numbers
+    and offsets are unchanged. A backslash-newline (line continuation)
+    keeps its newline. Unterminated strings/regexes are handled
+    leniently: the rest of the line is blanked and scanning resumes
+    on the next line.
+    """
+    out: list[str] = []
+    n = len(source)
+    i = 0
+    # Frames: ("code",) ("line",) ("block",) ("sq",) ("dq",)
+    # ("template",) ("interp", depth) ("regex",).
+    stack: list[tuple] = [("code",)]
+
+    def blank(ch: str) -> str:
+        return "\n" if ch == "\n" else " "
+
+    while i < n:
+        tag = stack[-1][0]
+        ch = source[i]
+        two = source[i:i + 2]
+        if tag in ("code", "interp"):
+            if two == "//":
+                stack.append(("line",))
+                out.append("  ")
+                i += 2
+            elif two == "/*":
+                stack.append(("block",))
+                out.append("  ")
+                i += 2
+            elif ch == "'":
+                stack.append(("sq",))
+                out.append("'")  # keep the delimiters: import patterns
+                i += 1           # match `['"]...['"]` on the cleaned text
+            elif ch == '"':
+                stack.append(("dq",))
+                out.append('"')
+                i += 1
+            elif ch == "`":
+                stack.append(("template",))
+                out.append("`")
+                i += 1
+            elif ch == "/" and _looks_like_regex_start(source, i):
+                stack.append(("regex",))
+                out.append(" ")
+                i += 1
+            elif tag == "interp" and ch == "{":
+                stack[-1] = ("interp", stack[-1][1] + 1)
+                out.append(" ")
+                i += 1
+            elif tag == "interp" and ch == "}":
+                depth = stack[-1][1] - 1
+                if depth == 0:
+                    stack.pop()
+                else:
+                    stack[-1] = ("interp", depth)
+                out.append(" ")
+                i += 1
+            else:
+                out.append(ch if tag == "code" else " ")
+                i += 1
+        elif tag == "line":
+            if ch == "\n":
+                stack.pop()
+                out.append("\n")
+            else:
+                out.append(" ")
+            i += 1
+        elif tag == "block":
+            if two == "*/":
+                stack.pop()
+                out.append("  ")
+                i += 2
+            else:
+                out.append(blank(ch))
+                i += 1
+        elif tag in ("sq", "dq"):
+            quote = "'" if tag == "sq" else '"'
+            if ch == "\\" and i + 1 < n:
+                out.append(" \n" if source[i + 1] == "\n" else "  ")
+                i += 2
+            elif ch == quote:
+                stack.pop()
+                out.append(quote)
+                i += 1
+            elif ch == "\n":  # unterminated string: be lenient
+                stack.pop()
+                out.append("\n")
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+        elif tag == "template":
+            if ch == "\\" and i + 1 < n:
+                out.append(" \n" if source[i + 1] == "\n" else "  ")
+                i += 2
+            elif ch == "`":
+                stack.pop()
+                out.append("`")
+                i += 1
+            elif two == "${":
+                stack.append(("interp", 1))
+                out.append("  ")
+                i += 2
+            else:
+                out.append(blank(ch))
+                i += 1
+        elif tag == "regex":
+            if ch == "\\" and i + 1 < n:
+                out.append(" \n" if source[i + 1] == "\n" else "  ")
+                i += 2
+            elif ch == "/":
+                stack.pop()
+                out.append(" ")
+                i += 1
+            elif ch == "\n":  # unterminated regex: be lenient
+                stack.pop()
+                out.append("\n")
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+    return "".join(out)
+
+
+def _class_body_ranges(source: str, class_matches) -> list[tuple[int, int]]:
+    """(start, end) offsets of class bodies, for the field-arrow filter.
+
+    Brace counting on the *cleaned* source is reliable: braces inside
+    strings, comments and template literals are already spaces.
+    """
+    ranges = []
+    for m in class_matches:
+        brace = source.find("{", m.end())
+        if brace == -1:
+            continue
+        depth = 0
+        j = brace
+        while j < len(source):
+            if source[j] == "{":
+                depth += 1
+            elif source[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    ranges.append((m.start(), j))
+                    break
+            j += 1
+    return ranges
 _IMPORT_RE = re.compile(
     r"""^[ \t]*import\s+(?:type\s+)?(?:[\w*{}\s,]+?[ \t]+from[ \t]+)?['"]([^'"]+)['"]""",
     re.MULTILINE,
@@ -312,39 +532,42 @@ _EXPORT_FROM_RE = re.compile(
     re.MULTILINE,
 )
 _FUNCTION_RE = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?(?:async[ \t]+)?function[ \t]*\*?[ \t]*([A-Za-z_$][\w$]*)[ \t]*\(""",
+    _BOUNDARY + r"""[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:async[ \t]+)?"""
+    r"""function[ \t]*\*?[ \t]*([A-Za-z_$][\w$]*)[ \t]*(?:<[^>]*>)?[ \t]*\(""",
     re.MULTILINE,
 )
 # Arrow functions: optional return-type annotation between the parameter
-# list and `=>` (``(n: string): string =>``), and single-identifier
-# params without parens (``x => x * 2``).
+# list and `=>` (``(n: string): string =>``), single-identifier params
+# without parens (``x => x * 2``), and an optional ``<T>`` type-parameter
+# list before the params (``const wrap = <T>(x: T) => x``).
 _ARROW_RE = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?const[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"""
-    r"""(?:async[ \t]+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)[ \t]*"""
+    _BOUNDARY + r"""[ \t]*(?:export[ \t]+)?const[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"""
+    r"""(?:async[ \t]+)?(?:<[^>]*>[ \t]*)?(?:(?:""" + _PAREN_GROUP + r""")|[A-Za-z_$][\w$]*)[ \t]*"""
     r"""(?::[ \t]*[A-Za-z_$<\[{][^=;]*?)?[ \t]*=>""",
     re.MULTILINE,
 )
-# `const name = function (...) {...}` / `const name = async function ...`.
+# `const name = function (...) {...}` / `const name = async function ...`,
+# including generic function expressions (`const f = function<T>(...)`).
 _FUNC_EXPR_RE = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?const[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"""
-    r"""(?:async[ \t]+)?function[ \t]*\*?[ \t]*\(""",
+    _BOUNDARY + r"""[ \t]*(?:export[ \t]+)?const[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"""
+    r"""(?:async[ \t]+)?function[ \t]*\*?[ \t]*(?:<[^>]*>)?[ \t]*\(""",
     re.MULTILINE,
 )
 _CLASS_RE = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?(?:default[ \t]+)?(?:abstract[ \t]+)?"""
+    _BOUNDARY + r"""[ \t]*(?:export[ \t]+)?(?:default[ \t]+)?(?:abstract[ \t]+)?"""
     r"""(?:declare[ \t]+)?class[ \t]+([A-Za-z_$][\w$]*)\b""",
     re.MULTILINE,
 )
 _INTERFACE_RE = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?interface[ \t]+([A-Za-z_$][\w$]*)\b""",
+    _BOUNDARY + r"""[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?interface[ \t]+([A-Za-z_$][\w$]*)\b""",
     re.MULTILINE,
 )
 _TYPE_ALIAS_RE = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?type[ \t]+([A-Za-z_$][\w$]*)[ \t]*=""",
+    _BOUNDARY + r"""[ \t]*(?:export[ \t]+)?type[ \t]+([A-Za-z_$][\w$]*)[ \t]*=""",
     re.MULTILINE,
 )
 _ENUM_RE = re.compile(
-    r"""^[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?(?:const[ \t]+)?enum[ \t]+([A-Za-z_$][\w$]*)\b""",
+    _BOUNDARY + r"""[ \t]*(?:export[ \t]+)?(?:declare[ \t]+)?(?:const[ \t]+)?enum[ \t]+([A-Za-z_$][\w$]*)\b""",
     re.MULTILINE,
 )
 # Module-level UPPER_SNAKE_CASE consts only (column 0, optional
@@ -355,14 +578,29 @@ _CONST_RE = re.compile(
     re.MULTILINE,
 )
 # Methods: indented `name(...) {` lines. The parameter list is optional
-# (getters have none: `get total(): number {`), and a return-type
-# annotation may sit between `)` and `{` (`: Promise<void>`). The
-# annotation's first character must start a type (`: {` is an object
-# type, but a bare `foo: {` object literal is not a method -- the
-# annotation needs a type token after the colon).
+# (getters have none: `get total(): number {`), a return-type annotation
+# may sit between `)` and `{` (`: Promise<void>`), and a `<T>` type
+# parameter list may sit between the name and `(`. The annotation's
+# first character must start a type (`: {` is an object type, but a bare
+# `foo: {` object literal is not a method -- the annotation needs a type
+# token after the colon). The name may be `#private` or computed
+# (`['save']`, `["reset"]`, `[Symbol.iterator]`). Parameter lists allow
+# nested parentheses (see _PAREN_GROUP).
 _METHOD_RE = re.compile(
-    r"""^([ \t]+)(?:(?:async|static|get|set)[ \t]+)*([A-Za-z_$][\w$]*)[ \t]*"""
-    r"""(?:\([^)]*\))?[ \t]*(?::[ \t]*[A-Za-z_$<\[{][^{;]*?)?\{""",
+    r"""^([ \t]+)(?:(?:async|static|get|set)[ \t]+)*"""
+    r"""(?:(?P<plain>#?[A-Za-z_$][\w$]*)|\[\s*(?:'(?P<csq>[^']+)'|"(?P<cdq>[^"]+)"|`(?P<cbt>[^`]+)`|(?P<cexpr>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?))\s*\])"""
+    r"""[ \t]*(?:<[^>]*>)?[ \t]*(?:(?:""" + _PAREN_GROUP + r"""))?[ \t]*(?::[ \t]*[A-Za-z_$<\[{][^{;]*?)?\{""",
+    re.MULTILINE,
+)
+# Class-field arrow functions: indented `name = (...) => {` lines
+# (`handler = (e: Event): void => {}`). These are only accepted inside
+# a class body (see _class_body_ranges in _parse_javascript): the same
+# shape at module/function scope is an ordinary variable assignment.
+_FIELD_ARROW_RE = re.compile(
+    r"""^([ \t]+)(?:(?:public|private|protected|readonly|static|declare|abstract)[ \t]+)*"""
+    r"""(#?[A-Za-z_$][\w$]*)[ \t]*=[ \t]*(?:async[ \t]+)?"""
+    r"""(?:(?:""" + _PAREN_GROUP + r""")|[A-Za-z_$][\w$]*)[ \t]*"""
+    r"""(?::[ \t]*[A-Za-z_$<\[{][^=;]*?)?[ \t]*=>""",
     re.MULTILINE,
 )
 _CALL_RE = re.compile(r"""([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(""")
@@ -382,34 +620,47 @@ def _line_of(starts: list[int], offset: int) -> int:
 
 def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
     parsed = ParsedFile(path=path, language=lang)
-    starts = _line_starts(source)
+    # Every regex below runs against the cleaned source: comments,
+    # strings, template literals and regex literals are spaces there,
+    # so code-like text inside them can never be mistaken for code.
+    # Lengths and newlines are preserved, so line numbers are the
+    # same as in the original source. Import module names are the one
+    # exception: they live inside string literals, so they are read
+    # back from the original source at the match's span.
+    cleaned = _strip_js_comments_and_strings(source)
+    starts = _line_starts(cleaned)
 
-    for m in _IMPORT_RE.finditer(source):
-        parsed.imports.append(Import(module=m.group(1), line=_line_of(starts, m.start())))
-    for m in _REQUIRE_RE.finditer(source):
-        parsed.imports.append(Import(module=m.group(1), line=_line_of(starts, m.start())))
-    for m in _EXPORT_FROM_RE.finditer(source):
-        parsed.imports.append(Import(module=m.group(1), line=_line_of(starts, m.start())))
+    def _module(m) -> str:
+        start, end = m.span(1)
+        return source[start:end]
 
-    for m in _FUNCTION_RE.finditer(source):
+    for m in _IMPORT_RE.finditer(cleaned):
+        parsed.imports.append(Import(module=_module(m), line=_line_of(starts, m.start())))
+    for m in _REQUIRE_RE.finditer(cleaned):
+        parsed.imports.append(Import(module=_module(m), line=_line_of(starts, m.start())))
+    for m in _EXPORT_FROM_RE.finditer(cleaned):
+        parsed.imports.append(Import(module=_module(m), line=_line_of(starts, m.start())))
+
+    for m in _FUNCTION_RE.finditer(cleaned):
         parsed.symbols.append(
             Symbol(name=m.group(1), kind="function", line=_line_of(starts, m.start()),
                    end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
                    signature=m.group(0).strip())
         )
-    for m in _ARROW_RE.finditer(source):
+    for m in _ARROW_RE.finditer(cleaned):
         parsed.symbols.append(
             Symbol(name=m.group(1), kind="function", line=_line_of(starts, m.start()),
                    end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
                    signature=m.group(0).strip())
         )
-    for m in _FUNC_EXPR_RE.finditer(source):
+    for m in _FUNC_EXPR_RE.finditer(cleaned):
         parsed.symbols.append(
             Symbol(name=m.group(1), kind="function", line=_line_of(starts, m.start()),
                    end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
                    signature=m.group(0).strip())
         )
-    for m in _CLASS_RE.finditer(source):
+    class_matches = list(_CLASS_RE.finditer(cleaned))
+    for m in class_matches:
         parsed.symbols.append(
             Symbol(name=m.group(1), kind="class", line=_line_of(starts, m.start()),
                    end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
@@ -417,7 +668,7 @@ def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
         )
     for regex, kind in ((_INTERFACE_RE, "interface"), (_TYPE_ALIAS_RE, "type"),
                         (_ENUM_RE, "enum")):
-        for m in regex.finditer(source):
+        for m in regex.finditer(cleaned):
             parsed.symbols.append(
                 Symbol(name=m.group(1), kind=kind, line=_line_of(starts, m.start()),
                        end_line=_line_of(starts, m.start()), qualified_name=m.group(1),
@@ -426,7 +677,7 @@ def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
     # Module-level UPPER_SNAKE_CASE consts; skip any already captured as
     # an arrow/function-expression symbol on the same line.
     seen = {(s.name, s.line) for s in parsed.symbols}
-    for m in _CONST_RE.finditer(source):
+    for m in _CONST_RE.finditer(cleaned):
         line = _line_of(starts, m.start())
         if (m.group(1), line) in seen:
             continue
@@ -438,8 +689,19 @@ def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
         seen.add((m.group(1), line))
     # Methods: indented `name(...) {` lines that are not top-level functions.
     seen = {(s.name, s.line) for s in parsed.symbols}
-    for m in _METHOD_RE.finditer(source):
-        name = m.group(2)
+    for m in _METHOD_RE.finditer(cleaned):
+        # The name lives in the match groups; for computed names the
+        # string itself was blanked by the pre-pass, so read the name
+        # back from the original source at the group's span (same
+        # offsets: the pass preserves length). The signature is taken
+        # from the original source for the same reason.
+        name = m.group("plain")
+        if name is None:
+            for grp in ("csq", "cdq", "cbt", "cexpr"):
+                if m.group(grp) is not None:
+                    start, end = m.span(grp)
+                    name = source[start:end]
+                    break
         if name in _JS_KEYWORDS:
             continue
         line = _line_of(starts, m.start())
@@ -447,8 +709,25 @@ def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
             continue
         parsed.symbols.append(
             Symbol(name=name, kind="method", line=line, end_line=line,
+                   qualified_name=name, signature=source[m.start():m.end()].strip())
+        )
+        seen.add((name, line))
+    # Class-field arrow functions: only inside a class body, so an
+    # ordinary `x = () => {}` assignment in a function body is not
+    # mistaken for a method.
+    class_ranges = _class_body_ranges(cleaned, class_matches)
+    for m in _FIELD_ARROW_RE.finditer(cleaned):
+        if not any(start <= m.start() <= end for start, end in class_ranges):
+            continue
+        name = m.group(2)
+        line = _line_of(starts, m.start())
+        if (name, line) in seen:
+            continue
+        parsed.symbols.append(
+            Symbol(name=name, kind="method", line=line, end_line=line,
                    qualified_name=name, signature=m.group(0).strip())
         )
+        seen.add((name, line))
 
     # Calls: every `name(` that is not a definition keyword and not a
     # definition site. Caller attribution is best-effort: the nearest
@@ -460,7 +739,7 @@ def _parse_javascript(path: str, source: str, lang: str) -> ParsedFile:
         (s for s in parsed.symbols if s.kind in ("function", "method", "class")),
         key=lambda s: s.line,
     )
-    for m in _CALL_RE.finditer(source):
+    for m in _CALL_RE.finditer(cleaned):
         callee = m.group(1)
         head = callee.split(".")[0]
         if head in _JS_KEYWORDS:

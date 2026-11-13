@@ -14,7 +14,7 @@ is Rust + Tree-sitter + Tantivy + SQLite; this repo implements the
 same engine and the same module boundaries in Python, so the behaviour
 is verifiable today and the port is mechanical. Python 3.10+, no
 third-party dependencies, no network calls, no account, no API key.
-The test suite is 160 `unittest` tests, all offline.
+The test suite is 189 `unittest` tests, all offline.
 
 ## Module map
 
@@ -31,7 +31,7 @@ codeatlas/
   archmap.py     architecture map (Mermaid/DOT/JSON) + diff impact
   tools.py       read-only tool surface (the MCP contract, plain functions)
 fixtures/        small Python + JS repos used by tests and demo.py
-tests/           160 tests, unittest, no network
+tests/           189 tests, unittest, no network
 ```
 
 ## Data flow
@@ -187,31 +187,48 @@ executed.
 
 ### JavaScript / TypeScript — regex approximation
 
-`_parse_javascript` uses compiled regular expressions for `import`
-(including `import type`), `require(…)`, `export … from …`,
-`function` declarations, `const name = (…) =>` arrow functions
-(including return-type annotations and single-identifier params),
-`const name = function …` expressions, `class` declarations,
-`interface` / `type` / `enum` declarations, module-level
-`UPPER_SNAKE_CASE` consts, and indented `name(…) {` method lines
-(including return-type annotations and getters, which have no
-parens) — all filtered against a keyword set. Line numbers are
-exact: the patterns use `[ \t]` at line starts, never `\s` (which
-matches newlines and used to mis-report definitions after blank
-lines). Calls are every `name(` occurrence that is not a definition
-site, with the caller attributed to the nearest preceding
-function/method/class symbol — best-effort, not scope-accurate.
-Interfaces, type aliases, enums, and constants are not call scopes.
-`end_line` is set to the definition line for every JS/TS symbol:
-there is no real end line, because there is no syntax tree.
+`_parse_javascript` first runs the source through
+`_strip_js_comments_and_strings`, which replaces comments, string
+literals, template literals and regex literals with spaces while
+preserving newlines — so code-like text inside a template literal or
+a block comment can never be indexed as a real symbol, and calls
+inside comments, strings and template literals are never recorded.
+Import module names are recovered from the original source at the
+match spans (the quotes survive the pass; only their contents are
+blanked). The regexes then extract `import` (including `import
+type`), `require(…)`, `export … from …`, `function` declarations
+(including `export default function` and generics), `const name =
+(…) =>` arrow functions (including return-type annotations,
+single-identifier params, and `<T>` type parameters), `const name =
+function …` expressions, `class` declarations, `interface` / `type` /
+`enum` declarations, module-level `UPPER_SNAKE_CASE` consts,
+indented `name(…) {` method lines (including return-type
+annotations, getters, generics, `#private` and computed
+`['name']`/`[Symbol.iterator]` methods), and class-field arrow
+functions (`handler = (e) => {}` — accepted only inside a class
+body) — all filtered against a keyword set. Line numbers are exact
+for real code: the patterns use `[ \t]` at line starts, never `\s`
+(which matches newlines and used to mis-report definitions after
+blank lines), and definitions may also start mid-line after a `;`
+or `{` boundary, so minified single-line code is parsed. Calls are
+every `name(` occurrence that is not a definition site, with the
+caller attributed to the nearest preceding function/method/class
+symbol — best-effort, not scope-accurate. Interfaces, type aliases,
+enums, and constants are not call scopes. `end_line` is set to the
+definition line for every JS/TS symbol: there is no real end line,
+because there is no syntax tree.
 
 Known gaps (also in the root `ARCHITECTURE.md`): dynamic imports,
-destructured methods, parameter lists with nested parentheses, and
-JSX syntax (components are found only as plain functions/classes).
-Re-export *imports* (`export … from`) are extracted, but
-re-exported names are not symbols. The parser degrades gracefully
-— partial results, never a crash — and those gaps are part of the
-contract, not bugs to paper over.
+destructured methods, parameter lists with parentheses nested more
+than three levels deep, methods inside a minified single-line class
+body, calls inside template-literal interpolations (`${...}` is
+blanked along with the literal, so they are not tracked), a `/`
+treated as a regex literal only by heuristic, and JSX syntax
+(components are found only as plain functions/classes). Re-export
+*imports* (`export … from`) are extracted, but re-exported names
+are not symbols. The parser degrades gracefully — partial results,
+never a crash — and those gaps are part of the contract, not bugs
+to paper over.
 
 ## The graph (`graph.py`)
 
@@ -398,7 +415,7 @@ git repo and no files were given.
 
 ## Testing
 
-`python -m unittest discover -s tests` — 160 tests, all offline.
+`python -m unittest discover -s tests` — 189 tests, all offline.
 Fixtures are copied to temp dirs per test, so tests never touch the
 real repo. Coverage includes incremental re-indexing (only changed
 files re-parsed, deletions removed), symbol search with verified
@@ -420,7 +437,10 @@ Honest list, so contributors do not "fix" the wrong thing:
 2. **No real tokenizer** — token budgets are `chars / 4`.
 3. **JS/TS parsing is regex-based and approximate** — see the gaps
    listed under "JavaScript / TypeScript" above; `end_line` is the
-   definition line, not a real end line.
+   definition line, not a real end line. Line numbers are exact for
+   real code, with the documented exceptions (template-literal
+   interpolations are not tracked; regex literals are detected by
+   heuristic).
 4. **In-memory index + JSON on disk** — no database; huge monorepos
    have not been benchmarked.
 5. **No semantic/embedding search** — ranking is deterministic

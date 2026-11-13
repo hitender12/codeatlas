@@ -36,7 +36,7 @@ codeatlas/
   archmap.py     architecture map (Mermaid/DOT/JSON) + diff impact
   tools.py       read-only tool surface (the MCP contract, plain functions)
 fixtures/        small Python + JS repos used by tests and demo.py
-tests/           160 tests, unittest, no network
+tests/           189 tests, unittest, no network
 ```
 
 ## Local setup
@@ -84,7 +84,7 @@ The entry point is defined in `pyproject.toml` as
 python -m unittest discover -s tests
 ```
 
-Expected output: `Ran 160 tests … OK`. All tests are offline. Each
+Expected output: `Ran 189 tests … OK`. All tests are offline. Each
 test copies the fixture repositories under `fixtures/` into a
 temporary directory and indexes the copy, so tests never touch the
 real repo and never need network access. Run the full suite before
@@ -185,7 +185,9 @@ for an unsupported extension, calls `_parse_python` for Python, and
    languages wherever they are listed. Do not claim support the
    parser does not have: the JS/TS regex parser, for example, is
    documented as missing dynamic imports, destructured methods,
-   parameter lists with nested parentheses, and JSX syntax.
+   parameter lists nested more than three levels deep, methods
+   inside a minified single-line class body, calls inside
+   template-literal interpolations, and JSX syntax.
 
 ### What the graph needs from a parser
 

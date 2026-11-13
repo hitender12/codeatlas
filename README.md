@@ -4,6 +4,7 @@
 > coding assistant understand a repository before editing it.
 
 ```bash
+pip install -e .           # install the `codeatlas` command (or use `python -m codeatlas` instead)
 codeatlas init
 codeatlas index
 codeatlas map
@@ -88,7 +89,7 @@ Affected tests:
 
 ## Honest status (v0.1.0)
 
-What genuinely works, verified by the test suite (`160 tests, OK`):
+What genuinely works, verified by the test suite (`189 tests, OK`):
 
 - Incremental re-indexing (only changed files re-parsed, verified).
 - Python parsing via `ast` (functions, methods, classes, constants,
@@ -96,7 +97,9 @@ What genuinely works, verified by the test suite (`160 tests, OK`):
 - JS/TS parsing via regex (functions, return-annotated arrows and
   methods, getters, classes, interfaces, type aliases, enums,
   module-level constants, imports, `require`, call references, exact
-  line numbers).
+  line numbers for real code — comments, strings and template
+  literals are stripped before parsing, so they can no longer leak
+  phantom symbols).
 - `.codeatlas/config.json` is read back: the ignore list, the
   language filter, and the default context budget are honoured
   (invalid entries fall back to the built-in defaults).
@@ -120,9 +123,16 @@ What it does **not** do yet (stated plainly, not hidden):
   adapters will call.
 - **No real tokenizer.** Token budgets use the documented approximation
   of 4 characters per token.
-- **JS/TS parsing is approximate.** Regex extraction misses dynamic
-  imports, destructured methods, and parameter lists with nested
-  parentheses. Re-export *imports* (`export … from`) are extracted,
+- **JS/TS parsing is approximate.** Regex extraction now covers
+  `export default function`, TypeScript generics, class-field arrow
+  functions, `#private` and computed methods, parameter lists with
+  parentheses nested up to three levels, and definitions on minified
+  single lines — but it still misses dynamic imports, destructured
+  methods, parameter lists nested more than three levels deep,
+  methods inside a minified single-line class body, and calls inside
+  template-literal interpolations (`${...}` is blanked along with
+  the literal). A `/` is treated as a regex literal only by
+  heuristic. Re-export *imports* (`export … from`) are extracted,
   but re-exported names are not symbols; JSX is not parsed (a
   component is found only as a plain function/class). It degrades
   gracefully (partial results, never a crash) and the gaps are

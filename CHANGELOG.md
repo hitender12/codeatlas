@@ -16,6 +16,13 @@ in `codeatlas/tools.py` are intended to stay stable.
 
 ### Added
 
+- **JS/TS parser coverage (round 2)**: `export default function`
+  (and `export default async function`), TypeScript generics on
+  functions, arrows, function expressions and methods, class-field
+  arrow functions (`handler = (e) => {}`), `#private` and computed
+  (`['save']`, `[Symbol.iterator]`) methods, parameter lists with
+  parentheses nested up to three levels, and definitions on
+  minified single lines (after a `;` or `{` boundary).
 - **`.codeatlas/config.json` is now read back** (`indexer.load_config`):
   the ignore list, the language filter, and the default context
   budget (`context_budget_tokens`) take effect on every index and
@@ -35,19 +42,35 @@ in `codeatlas/tools.py` are intended to stay stable.
 
 ### Changed
 
-- **Test suite: 25 → 160 tests.** Every documented CLI command is
+- **Test suite: 25 → 161 tests** (round 1). Every documented CLI command is
   now exercised verbatim by the suite, and the retrieval eval
   (17 cases) is re-measured below.
+- **Test suite: 161 → 189 tests** (round 2; 28 new regression tests
+  for the parser fixes below).
 - **Retrieval eval** (`python3 tests/retrieval_eval.py`, 17 cases):
   mean search precision 0.337, mean search recall 1.000, hit@1
   0.824; mean context-pack precision 0.320, mean pack recall 1.000;
   **empty-text snippets in TS context packs: 12 → 0** (the JS
   line-number fix). Precision is unchanged and still low by design
   of the strict single-file relevance metric (see the eval module
-  docstring).
+  docstring). Re-measured after the round-2 parser fixes: numbers
+  unchanged, still 0 empty snippets.
 
 ### Fixed
 
+- **JS/TS phantom symbols from comments, strings and template
+  literals (round 2).** The regex parser had no comment/string
+  awareness, so code-like text inside a multi-line template literal
+  or a `/* */` block comment was indexed as real code, and calls
+  inside template literals and line comments were recorded as real
+  calls. Parsing now runs against a pre-pass
+  (`parsers._strip_js_comments_and_strings`) that blanks comments,
+  strings, template literals and regex literals while preserving
+  every newline, so line numbers are unchanged. Import module names
+  are recovered from the original source at the match spans.
+  Documented limits: calls inside `${...}` interpolations are not
+  tracked, and a `/` is treated as a regex literal only by
+  heuristic.
 - **JS/TS definition lines are now exact.** The regexes used
   `^\s*`, and `\s` matches newlines, so any definition preceded by
   blank line(s) was reported at the first preceding blank line --
@@ -66,6 +89,16 @@ in `codeatlas/tools.py` are intended to stay stable.
   `CONTRIBUTING.md` (CI exists), the JS/TS gap lists (re-export
   imports *are* extracted; JSX components *are* found as plain
   functions/classes), and the stale "25 tests" counts everywhere.
+- **Documentation audit (round 2)**: the stale "160 tests" counts
+  in 10 places are corrected to the real count (189); the README
+  header block now shows the `pip install -e .` step before the
+  `codeatlas` console-script commands (the command does not exist
+  in a fresh checkout until installed); the "Line numbers are
+  exact" claim carries its gaps caveat, and the JS/TS gap lists
+  are complete -- template-literal interpolations, the
+  regex-literal heuristic, parameter lists nested more than three
+  levels deep, and methods inside minified single-line class
+  bodies are now disclosed as remaining gaps.
 
 ## [0.1.0] — 2026-11-11
 
